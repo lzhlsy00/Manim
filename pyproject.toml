@@ -1,0 +1,19 @@
+[project]
+name = "manimations"
+version = "0.1.0"
+description = "API-based educational animation generator using Manim and Claude AI"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "manim>=0.19.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "anthropic>=0.30.0",
+    "python-multipart>=0.0.6",
+    "aiofiles>=23.2.0",
+    "httpx[socks]>=0.28.1",
+    "openai>=1.0.0",
+    "pydub>=0.25.1",
+    "python-dotenv>=1.0.0",
+    "supabase>=2.16.0",
+]

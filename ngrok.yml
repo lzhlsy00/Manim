@@ -1,0 +1,9 @@
+version: "2"
+authtoken: 31SN9BKGqN5TlU4WiyGZBgOlVCI_55vHd4phEMoA8G5mJzYfy
+
+tunnels:
+  manim-api:
+    proto: http
+    addr: 8000
+    schemes: [https]
+    inspect: false
