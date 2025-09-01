@@ -4,8 +4,6 @@ Updated to return video_id immediately and process generation in background.
 """
 
 import os
-# Set BYPASS_AUTH for development
-os.environ["BYPASS_AUTH"] = "true"
 import asyncio
 import shutil
 import time
@@ -76,10 +74,11 @@ class FilteredColorHandler(logging.StreamHandler):
             
             # 检查是否是需要显示的消息类型
             is_step = any(keyword in message for keyword in ['步骤', '开始生成', '启动完成', '服务地址'])
+            is_auth = any(keyword in message for keyword in ['Auth header', 'Current user', '认证用户', '提取到用户名', 'Authorization header', 'Optional auth'])
             is_error = record.levelname in ['ERROR', 'CRITICAL']
             is_warning = record.levelname == 'WARNING'
             
-            if not (is_step or is_error or is_warning):
+            if not (is_step or is_auth or is_error or is_warning):
                 return  # 跳过其他日志
             
             # 添加时间戳
@@ -199,6 +198,11 @@ async def generate_animation(
     auth_header = fastapi_request.headers.get("authorization")
     logger.info(f"Generate endpoint called. Auth header: {auth_header[:50] if auth_header else 'None'}...")
     logger.info(f"Current user: {current_user}")
+    logger.info(f"Current user type: {type(current_user)}")
+    if current_user:
+        logger.info(f"User keys: {list(current_user.keys())}")
+        logger.info(f"User email: {current_user.get('email')}")
+        logger.info(f"User ID: {current_user.get('user_id')}")
     
     animation_id = generate_animation_id()
     
@@ -213,8 +217,16 @@ async def generate_animation(
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         timestamped_prompt = f"[{current_time}] {request.prompt}"
         
+        # 提取用户名用于存储
+        user_name = None
+        if current_user:
+            user_name = current_user.get('email', current_user.get('user_id'))
+            logger.info(f"✅ 提取到用户名: {user_name}")
+        else:
+            logger.warning("⚠️ 当前用户为空，无法提取用户名")
+        
         # 1. 创建视频记录（生成的视频ID存储到video_id字段）
-        db_uuid = await db_service.create_video_record(animation_id, timestamped_prompt)
+        db_uuid = await db_service.create_video_record(animation_id, timestamped_prompt, user_name)
         if db_uuid:
             # 2. 创建status记录并开始记录状态
             await db_service.create_status_record(db_uuid, "🚀 开始生成视频", step=1, prompt=timestamped_prompt)
@@ -463,6 +475,23 @@ async def list_all_videos():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list videos: {str(e)}")
+
+
+@app.get("/videos/user/{user_name}")
+async def list_user_videos(user_name: str):
+    """获取指定用户的视频列表"""
+    try:
+        db_service = get_database_service()
+        videos = await db_service.get_videos_by_user(user_name)
+        
+        return {
+            "videos": videos,
+            "count": len(videos),
+            "user_name": user_name
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list user videos: {str(e)}")
 
 
 if __name__ == "__main__":

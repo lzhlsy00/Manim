@@ -18,20 +18,24 @@ class DatabaseService:
     def __init__(self):
         self.supabase = get_supabase_client()
     
-    async def create_video_record(self, video_id: str, prompt: str = None) -> Optional[str]:
+    async def create_video_record(self, video_id: str, prompt: str = None, user_name: str = None) -> Optional[str]:
         """
         创建视频记录
         Args:
             video_id: 生成的视频ID (存储到video_id字段)
             prompt: 用户输入的提示词
+            user_name: 用户名称
         Returns:
             创建成功返回数据库生成的UUID，失败返回None
         """
         try:
             data = {
                 'video_id': video_id,  # 生成的视频ID存储到video_id字段
-                'video_url': None
+                'video_url': None,
+                'user_name': user_name  # 存储用户名
             }
+            
+            logger.info(f"📝 准备插入视频记录: video_id={video_id}, user_name={user_name}")
             
             # 如果提供了prompt，添加到数据中
             if prompt:
@@ -41,7 +45,8 @@ class DatabaseService:
             
             if response.data:
                 db_uuid = response.data[0]['id']  # 数据库自动生成的UUID
-                logger.info(f"✅ 视频记录创建成功: video_id={video_id}, db_id={db_uuid}")
+                stored_user_name = response.data[0].get('user_name')
+                logger.info(f"✅ 视频记录创建成功: video_id={video_id}, db_id={db_uuid}, 存储的用户名={stored_user_name}")
                 return db_uuid
             else:
                 logger.error(f"❌ 视频记录创建失败: {response}")
@@ -184,6 +189,23 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"❌ 获取视频记录时出错: {str(e)}")
             return None
+    
+    async def get_videos_by_user(self, user_name: str) -> list:
+        """
+        根据用户名获取用户的所有视频
+        Args:
+            user_name: 用户名称
+        Returns:
+            用户的视频列表
+        """
+        try:
+            response = self.supabase.table('videos').select('*').eq('user_name', user_name).order('id', desc=True).execute()
+            
+            return response.data if response.data else []
+                
+        except Exception as e:
+            logger.error(f"❌ 获取用户视频列表时出错: {str(e)}")
+            return []
 
 # 全局数据库服务实例
 _db_service = None

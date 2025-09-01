@@ -82,8 +82,10 @@ async def optional_auth(request: Request) -> Optional[dict]:
         User data if authenticated, None otherwise
     """
     authorization = request.headers.get("Authorization")
+    logger.info(f"🔐 Optional auth called. Authorization header: {authorization[:50] if authorization else 'None'}...")
     
     if not authorization:
+        logger.info("⚠️ No Authorization header found")
         return None
     
     try:
@@ -99,36 +101,19 @@ async def optional_auth(request: Request) -> Optional[dict]:
         user = supabase.auth.get_user(token)
         
         if user and user.user:
-            return {
+            user_data = {
                 "user_id": user.user.id,
                 "email": user.user.email,
                 "user_metadata": user.user.user_metadata
             }
+            logger.info(f"✅ 成功认证用户: {user.user.email}")
+            return user_data
+        else:
+            logger.warning("⚠️ Supabase返回的用户信息为空")
         
     except Exception as e:
-        logger.warning(f"Optional auth failed: {str(e)}")
+        logger.warning(f"❌ Optional auth失败: {str(e)}")
     
     return None
 
 
-# Development mode bypass (only for testing)
-BYPASS_AUTH = os.getenv("BYPASS_AUTH", "false").lower() == "true"
-
-if BYPASS_AUTH:
-    logger.warning("⚠️  Authentication is bypassed in development mode!")
-    
-    async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = None) -> dict:
-        """Development mode - always return test user"""
-        return {
-            "user_id": "test-user-id",
-            "email": "test@example.com",
-            "user_metadata": {"name": "Test User"}
-        }
-    
-    async def get_current_user(user_data: dict = None) -> dict:
-        """Development mode - always return test user"""
-        return {
-            "user_id": "test-user-id",
-            "email": "test@example.com",
-            "user_metadata": {"name": "Test User"}
-        }

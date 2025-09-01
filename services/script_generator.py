@@ -252,6 +252,9 @@ async def generate_manim_script(
     - Use get_vertices() to access polygon points
     - Use rotate() with calculated angles, not get_angle()
     - Test positioning with get_center(), get_corner(), etc.
+    - CRITICAL: axes.c2p() only accepts coordinates as parameters, NOT buff or other kwargs
+      WRONG: axes.c2p(1, 0, buff=0.3)
+      CORRECT: axes.c2p(1, 0)
     
     TEXT AND LANGUAGE Guidelines:
     - Use Text() for non-English text, NOT MathTex() 
@@ -521,6 +524,10 @@ async def fix_manim_script_from_error(
       NEVER pass opacity to get_riemann_rectangles(), use set_fill(opacity=value) after creation
     - CORRECT: rectangles = axes.get_riemann_rectangles(curve, x_range=[a,b], dx=step, color=GREEN)
               rectangles.set_fill(opacity=0.6)  # Set opacity separately
+    - axes.c2p() unexpected keyword argument 'buff':
+      NEVER pass buff or any keyword arguments to c2p(), only coordinates
+      WRONG: axes.c2p(1, 0, buff=0.3)
+      CORRECT: axes.c2p(1, 0)
     
     LaTeX/Text issues to fix:
     - LaTeX compilation errors: Use Text() for non-English characters instead of MathTex()
@@ -634,6 +641,22 @@ def auto_fix_large_coordinates(script: str) -> str:
     
     # First, fix get_riemann_rectangles opacity parameter error
     script = auto_fix_riemann_rectangles_opacity(script)
+    
+    # Fix c2p() method with unexpected keyword arguments
+    # Pattern: axes.c2p(x, y, buff=value) -> axes.c2p(x, y)
+    # This fixes the common error: TypeError: CoordinateSystem.c2p() got an unexpected keyword argument 'buff'
+    script = re.sub(
+        r'(\.c2p\([^,)]+,\s*[^,)]+),\s*buff\s*=\s*[\d.]+\)',
+        r'\1)',
+        script
+    )
+    
+    # Also fix any other keyword arguments passed to c2p()
+    script = re.sub(
+        r'(\.c2p\([^)]+)),\s*\w+\s*=\s*[^)]+\)',
+        r'\1)',
+        script
+    )
     
     # Fix TypeError with get_vertices() - convert tuple multiplication to numpy array
     script = re.sub(
