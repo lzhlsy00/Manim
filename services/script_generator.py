@@ -56,12 +56,14 @@ async def generate_and_refine_manim_script(
     prompt: str, 
     max_attempts: int = 5,
     target_duration: float = 45.0,
-    language: str = "en"
+    language: str = "en",
+    file_context: Optional[str] = None
 ) -> str:
     """
     Generate a Manim script and refine it if it fails to execute.
     """
     conversation_history: List[MessageParam] = []
+    analyzed_content = None  # 存储资料分析结果
     
     for attempt in range(max_attempts):
         logger.info(f"Attempt {attempt + 1}/{max_attempts} to generate/refine script")
@@ -70,7 +72,7 @@ async def generate_and_refine_manim_script(
             # Generate or refine the script
             if attempt == 0:
                 # First attempt: generate new script
-                script = await generate_manim_script(client, prompt, conversation_history, target_duration, language)
+                script, analyzed_content = await generate_manim_script(client, prompt, conversation_history, target_duration, language, file_context)
             else:
                 # Subsequent attempts: refine based on error
                 script = await refine_manim_script(client, prompt, conversation_history, language)
@@ -79,6 +81,24 @@ async def generate_and_refine_manim_script(
             test_result = await test_manim_script(script)
             
             if test_result["success"]:
+                # 如果有上传内容，验证内容覆盖率
+                if file_context and analyzed_content:
+                    key_concepts = analyzed_content.get('key_concepts', [])
+                    coverage = verify_content_coverage(script, file_context, key_concepts)
+                    
+                    # 只有在前几次尝试且覆盖率太低时才重新生成
+                    if coverage < 0.4 and attempt < max_attempts - 2:
+                        logger.info(f"内容覆盖率过低 ({coverage:.2f})，重新生成以更好地利用上传内容...")
+                        conversation_history.append({
+                            "role": "assistant",
+                            "content": script
+                        })
+                        conversation_history.append({
+                            "role": "user",
+                            "content": f"The animation doesn't include enough content from the uploaded materials. Please regenerate focusing more on the uploaded content, especially these concepts: {', '.join(key_concepts)}. Make sure to create visual animations for these key points."
+                        })
+                        continue
+                
                 logger.info(f"Script successfully generated on attempt {attempt + 1}")
                 return script
             else:
@@ -143,10 +163,14 @@ async def generate_manim_script(
     prompt: str, 
     conversation_history: Optional[List[MessageParam]] = None,
     target_duration: float = 45.0,
-    language: str = "en"
-) -> str:
+    language: str = "en",
+    file_context: Optional[str] = None
+) -> tuple[str, Optional[Dict[str, Any]]]:
     """
     Use Claude to generate a Manim script based on the user's prompt.
+    
+    Returns:
+        Tuple of (generated_script, analyzed_content)
     """
     # Language mapping for clear instructions
     language_names = {
@@ -158,6 +182,15 @@ async def generate_manim_script(
     
     system_prompt = f"""You are an expert in creating educational animations using the Manim library. 
     Generate a complete, runnable Python script using Manim that creates an educational animation based on the user's prompt.
+
+    UPLOADED CONTENT HANDLING (when provided):
+    - If the user has uploaded files, the content will be provided after their prompt
+    - You MUST base your animation on the KEY CONCEPTS from the uploaded materials
+    - Extract and visualize important formulas, data, or diagrams from the files
+    - Follow the structure and flow of the uploaded content
+    - The user's prompt indicates HOW to present the uploaded content
+    - Create animations that explain or demonstrate the uploaded material
+    - Prioritize content from uploaded files over general knowledge
 
     LANGUAGE REQUIREMENT: Generate ALL text content (titles, explanations, labels) in {language_name} language.
     Make sure all Text() and MathTex() objects use {language_name} language appropriate to the content.
@@ -301,7 +334,46 @@ async def generate_manim_script(
     # 增强系统提示词，加入质量控制
     system_prompt = enhance_script_generation_prompt(system_prompt)
     
-    messages: List[MessageParam] = [{"role": "user", "content": f"Create an educational animation about: {prompt}"}]
+    # Prepare user message with optional file context
+    local_analyzed_content = None
+    if file_context:
+        # 先分析上传的内容
+        logger.info("📋 分析上传的资料内容...")
+        local_analyzed_content = await analyze_uploaded_content(client, file_context, prompt, language)
+        
+        if local_analyzed_content:
+            # 基于分析结果构建更智能的用户消息
+            concepts_str = ', '.join(local_analyzed_content.get('key_concepts', []))
+            formulas_str = ', '.join(local_analyzed_content.get('formulas', []))
+            suggestions_str = ', '.join(local_analyzed_content.get('animation_suggestions', []))
+            
+            user_message = f"""Create an educational animation based on the following uploaded material:
+
+User's Request: {prompt}
+
+Material Analysis:
+- Type: {local_analyzed_content.get('content_type', 'Unknown')}
+- Key Concepts: {concepts_str}
+- Educational Focus: {local_analyzed_content.get('educational_focus', 'General explanation')}
+{f'- Formulas Found: {formulas_str}' if formulas_str else ''}
+{f'- Animation Suggestions: {suggestions_str}' if suggestions_str else ''}
+
+Full Uploaded Content:
+{file_context}
+
+CRITICAL: Base your animation on the KEY CONCEPTS and STRUCTURE from the uploaded material. The user's request indicates how to present this content. Focus on making the uploaded content visual and engaging."""
+        else:
+            # 分析失败时的降级处理（保持原有逻辑）
+            user_message = f"""Create an educational animation about: {prompt}
+
+Uploaded Content Context:
+{file_context}
+
+IMPORTANT: Use the uploaded content as the primary source for your animation."""
+    else:
+        user_message = f"Create an educational animation about: {prompt}"
+    
+    messages: List[MessageParam] = [{"role": "user", "content": user_message}]
     
     if conversation_history:
         messages = conversation_history + messages
@@ -337,7 +409,7 @@ async def generate_manim_script(
         if quality_report['has_issues']:
             logger.warning(f"发现质量问题: {quality_report['issues']}")
         
-        return optimized_code
+        return optimized_code, local_analyzed_content
         
     except anthropic.BadRequestError as e:
         logger.error(f"Bad request error in generate_manim_script: {str(e)}")
@@ -981,3 +1053,129 @@ async def estimate_narration_duration(client: anthropic.Anthropic, prompt: str) 
         # Fallback based on prompt length
         word_count = len(prompt.split())
         return min(45.0 + word_count * 2, 75.0)
+
+
+async def analyze_uploaded_content(
+    client: anthropic.Anthropic,
+    file_context: str,
+    user_prompt: str,
+    language: str = 'en'
+) -> Optional[Dict[str, Any]]:
+    """
+    分析上传的资料内容，提取结构化信息
+    
+    Args:
+        client: Anthropic client
+        file_context: 上传文件的文本内容
+        user_prompt: 用户的提示词
+        language: 语言代码
+        
+    Returns:
+        分析结果的字典，包含内容类型、关键概念等信息
+    """
+    language_names = {
+        'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+        'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese',
+        'ko': 'Korean', 'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi'
+    }
+    language_name = language_names.get(language, 'English')
+    
+    system_prompt = f"""Analyze the uploaded content and extract key information for video animation generation.
+
+Your task is to understand the uploaded material and identify:
+1. content_type: Type of material (textbook/slides/data/article/research/manual/etc.)
+2. key_concepts: List of main concepts, topics, or subjects (max 5 items)
+3. formulas: Mathematical formulas, equations, or scientific notations found
+4. data_points: Important data, statistics, or numerical information
+5. visual_elements: Descriptions of any charts, diagrams, or visual content mentioned
+6. structure: The logical organization of the content (chapters/sections/steps)
+7. educational_focus: What should be the main teaching points
+8. animation_suggestions: Specific suggestions for what to visualize
+
+Respond in {language_name} when analyzing content in that language.
+
+Return ONLY valid JSON format with these fields. If any field doesn't apply, use empty array [] or null.
+
+Example:
+{{
+    "content_type": "mathematical textbook",
+    "key_concepts": ["quadratic equations", "factoring", "graphing"],
+    "formulas": ["ax² + bx + c = 0", "x = (-b ± √(b²-4ac)) / 2a"],
+    "data_points": [],
+    "visual_elements": ["parabola graphs", "coefficient examples"],
+    "structure": ["introduction", "solving methods", "examples", "practice"],
+    "educational_focus": "step-by-step solving process",
+    "animation_suggestions": ["show parabola transformation", "demonstrate factoring steps"]
+}}"""
+    
+    try:
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=2000,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"User request: {user_prompt}\n\nUploaded content to analyze:\n{file_context[:8000]}"  # Limit content length
+                }
+            ]
+        )
+        
+        content = message.content[0]
+        analysis_text = extract_text_from_content(content)
+        
+        import json
+        try:
+            analysis_result = json.loads(analysis_text)
+            logger.info(f"✅ 资料分析完成: 类型={analysis_result.get('content_type', 'unknown')}, 关键概念={len(analysis_result.get('key_concepts', []))}")
+            return analysis_result
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"资料分析JSON解析失败: {str(e)}, 使用降级处理")
+            return {
+                "content_type": "text_content",
+                "key_concepts": ["uploaded content"],
+                "formulas": [],
+                "data_points": [],
+                "visual_elements": [],
+                "structure": ["uploaded material"],
+                "educational_focus": "explain uploaded content",
+                "animation_suggestions": ["visualize key points"]
+            }
+        
+    except Exception as e:
+        logger.warning(f"资料分析失败: {str(e)}, 返回None")
+        return None
+
+
+def verify_content_coverage(script: str, file_context: str, key_concepts: List[str]) -> float:
+    """
+    验证生成的脚本是否包含了上传资料的关键内容
+    
+    Args:
+        script: 生成的Manim脚本
+        file_context: 原始上传内容
+        key_concepts: 关键概念列表
+        
+    Returns:
+        覆盖率（0-1之间的浮点数）
+    """
+    if not file_context or not key_concepts:
+        return 1.0  # 没有上传内容时默认通过
+    
+    script_lower = script.lower()
+    covered_concepts = 0
+    
+    for concept in key_concepts:
+        # 检查概念是否出现在脚本中（处理中英文）
+        if concept.lower() in script_lower:
+            covered_concepts += 1
+    
+    coverage = covered_concepts / len(key_concepts) if key_concepts else 1.0
+    
+    if coverage < 0.5:
+        logger.warning(f"⚠️ 内容覆盖率较低: {coverage:.2f}，可能需要重新生成")
+    else:
+        logger.info(f"✅ 内容覆盖率: {coverage:.2f}")
+    
+    return coverage

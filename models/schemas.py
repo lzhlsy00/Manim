@@ -3,7 +3,16 @@ Pydantic models for the Manimations API.
 """
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
+from fastapi import UploadFile
+
+
+class FileUploadInfo(BaseModel):
+    """Information about an uploaded file."""
+    filename: str
+    content_type: str
+    size: int
+    extracted_text: Optional[str] = None
 
 
 class AnimationRequest(BaseModel):
@@ -14,6 +23,7 @@ class AnimationRequest(BaseModel):
     voice: str = "alloy"  # OpenAI voice: alloy, echo, fable, onyx, nova, shimmer
     language: Optional[str] = None  # Language code (auto-detected if None)
     sync_method: str = "timing_analysis"  # "timing_analysis", "narration_first", "subtitle_overlay"
+    uploaded_files_context: Optional[str] = None  # Extracted text content from uploaded files
 
 
 class AnimationResponse(BaseModel):

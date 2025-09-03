@@ -8,13 +8,14 @@ import asyncio
 import shutil
 import time
 import logging
+import mimetypes
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # Import our models
-from models import AnimationRequest, AnimationResponse
+from models import AnimationRequest, AnimationResponse, FileUploadInfo
 
 # Import auth middleware
 from middleware.auth import get_current_user, optional_auth
@@ -40,6 +41,7 @@ from services import (
 from services.supabase_storage import upload_video_to_supabase
 from services.audio_processor import get_audio_duration
 from services.database_service import get_database_service
+from services.file_processor import get_file_processor, cleanup_file_processor
 # from utils.database_logger import setup_database_logging, remove_database_logging  # 已禁用
 
 # Import our utilities
@@ -184,6 +186,74 @@ async def verify_auth(current_user: dict = Depends(get_current_user)):
     return {"authenticated": True, "user": current_user}
 
 
+@app.post("/upload")
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    current_user: dict = Depends(optional_auth)
+):
+    """
+    Upload and process files to extract text content.
+    Returns extracted text that can be used as context for video generation.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    file_processor = get_file_processor()
+    processed_files = []
+    all_extracted_text = []
+    
+    try:
+        for file in files:
+            # Validate file size
+            file_content = await file.read()
+            file_size = len(file_content)
+            
+            if not file_processor.validate_file_size(file_size):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"File {file.filename} is too large. Maximum size is 50MB."
+                )
+            
+            # Check file type
+            content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+            if not file_processor.is_supported_file_type(content_type):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"File type {content_type} is not supported. Supported types: PDF, Word, Images, Text."
+                )
+            
+            # Extract text content
+            logger.info(f"Processing file: {file.filename} ({content_type})")
+            extracted_text = await file_processor.extract_text_from_file(
+                file_content, file.filename, content_type
+            )
+            
+            file_info = {
+                "filename": file.filename,
+                "content_type": content_type,
+                "size": file_size,
+                "extracted_text": extracted_text
+            }
+            processed_files.append(file_info)
+            
+            if extracted_text:
+                all_extracted_text.append(f"=== Content from {file.filename} ===\n{extracted_text}")
+        
+        # Combine all extracted text
+        combined_text = "\n\n".join(all_extracted_text) if all_extracted_text else None
+        
+        return {
+            "files": processed_files,
+            "combined_text": combined_text,
+            "total_files": len(files),
+            "files_with_text": len([f for f in processed_files if f["extracted_text"]])
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing files: {str(e)}")
+
+
 @app.post("/generate", response_model=AnimationResponse)
 async def generate_animation(
     request: AnimationRequest,
@@ -282,7 +352,8 @@ async def generate_video_background(request: AnimationRequest, animation_id: str
             target_duration = 45.0  # Default for videos without audio
         
         manim_script = await generate_and_refine_manim_script(
-            client, request.prompt, max_attempts=3, target_duration=target_duration, language=detected_language
+            client, request.prompt, max_attempts=3, target_duration=target_duration, 
+            language=detected_language, file_context=request.uploaded_files_context
         )
         logger.info("✅ 脚本生成完成")
         
@@ -425,6 +496,9 @@ async def generate_video_background(request: AnimationRequest, animation_id: str
         
         logger.info(f"🎉 视频生成完成! 耗时: {total_time:.1f}秒")
         
+        # Clean up file processor
+        cleanup_file_processor()
+        
     except Exception as e:
         # 更新错误状态到数据库
         logger.error(f"❌ 视频生成失败: {str(e)}")
@@ -437,6 +511,9 @@ async def generate_video_background(request: AnimationRequest, animation_id: str
         
         # Clean up any partial files
         cleanup_temp_files(animation_id)
+        
+        # Clean up file processor
+        cleanup_file_processor()
 
 
 @app.get("/video/{video_id}/status")
@@ -478,7 +555,7 @@ async def list_all_videos():
 
 
 @app.get("/videos/user/{user_name}")
-async def list_user_videos(user_name: str):
+async def list_user_videos(user_name: str, current_user: dict = Depends(optional_auth)):
     """获取指定用户的视频列表"""
     try:
         db_service = get_database_service()
