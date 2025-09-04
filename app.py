@@ -228,6 +228,15 @@ async def upload_files(
                 file_content, file.filename, content_type
             )
             
+            # 显示提取的文本内容
+            if extracted_text:
+                logger.info("-" * 80)
+                logger.info(f"📄 【从 {file.filename} 提取的内容】")
+                logger.info(f"{extracted_text[:300]}...")
+                if len(extracted_text) > 300:
+                    logger.info(f"... (共 {len(extracted_text)} 字符)")
+                logger.info("-" * 80)
+            
             file_info = {
                 "filename": file.filename,
                 "content_type": content_type,
@@ -241,6 +250,15 @@ async def upload_files(
         
         # Combine all extracted text
         combined_text = "\n\n".join(all_extracted_text) if all_extracted_text else None
+        
+        # 显示合并后的内容
+        if combined_text:
+            logger.info("=" * 80)
+            logger.info("📚 【所有文件合并后的内容】")
+            logger.info(f"{combined_text[:500]}...")
+            if len(combined_text) > 500:
+                logger.info(f"... (总共 {len(combined_text)} 字符)")
+            logger.info("=" * 80)
         
         return {
             "files": processed_files,
@@ -335,6 +353,25 @@ async def generate_video_background(request: AnimationRequest, animation_id: str
     try:
         # 不再需要实时日志记录，只记录关键状态点
         db_handler = None
+        
+        # 显示用户请求和文件内容信息
+        logger.info("=" * 120)
+        logger.info("🎬 【开始生成视频】")
+        logger.info("-" * 120)
+        logger.info(f"📹 视频ID: {animation_id}")
+        logger.info(f"👤 用户输入: {request.prompt}")
+        logger.info(f"🌐 语言: {request.language or '自动检测'}")
+        logger.info(f"🎵 包含音频: {'是' if request.include_audio else '否'}")
+        logger.info(f"📐 分辨率: {request.resolution}")
+        
+        if request.uploaded_files_context:
+            logger.info("-" * 120)
+            logger.info("📎 【上传文件内容】")
+            logger.info(f"{request.uploaded_files_context[:500]}...")
+            if len(request.uploaded_files_context) > 500:
+                logger.info(f"... (共 {len(request.uploaded_files_context)} 字符)")
+        
+        logger.info("=" * 120)
         
         # Step 2: Generate and refine Manim script using Claude
         logger.info("📝 步骤2: 生成Manim脚本")

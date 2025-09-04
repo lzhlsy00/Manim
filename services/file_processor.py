@@ -5,6 +5,7 @@ Supports PDF, Word documents, and images with OCR.
 
 import os
 import io
+import re
 import tempfile
 import logging
 from typing import Optional, Dict, Any
@@ -184,9 +185,13 @@ class FileProcessor:
             return None
     
     async def _extract_from_image(self, file_path: str) -> Optional[str]:
-        """Extract text from image using OCR."""
-        if not OCR_AVAILABLE:
-            logger.error("OCR processing not available. Install pytesseract and pillow.")
+        """Extract text from image using OCR with enhanced math recognition."""
+        # 运行时检测OCR可用性，避免导入时检测的问题
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as e:
+            logger.error(f"OCR processing not available: {e}. Install pytesseract and pillow.")
             return None
         
         try:
@@ -197,21 +202,105 @@ class FileProcessor:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Extract text using Tesseract
-            # Support both English and Chinese
-            text_content = pytesseract.image_to_string(image, lang='eng+chi_sim')
+            # Try multiple OCR approaches for better math formula recognition
+            text_results = []
             
-            # Clean up the extracted text
-            text_content = text_content.strip()
-            if not text_content:
-                logger.warning("No text found in image")
+            # Approach 1: Standard OCR with multiple languages
+            try:
+                text1 = pytesseract.image_to_string(image, lang='eng+chi_sim')
+                if text1.strip():
+                    text_results.append(("standard", text1.strip()))
+            except Exception:
+                pass
+            
+            # Approach 2: OCR optimized for math symbols
+            try:
+                # Use different OCR engine mode for math
+                custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-=()[]{}∫∑∂∆πλμσθαβγδεζηθικλμνξοπρστυφχψω∞≤≥≠±×÷√∈∉⊂⊃⊆⊇∪∩∧∨¬→←↔↑↓'
+                text2 = pytesseract.image_to_string(image, config=custom_config, lang='eng')
+                if text2.strip():
+                    text_results.append(("math_optimized", text2.strip()))
+            except Exception:
+                pass
+            
+            # Approach 3: Enhanced preprocessing and OCR
+            try:
+                # Resize image for better OCR accuracy
+                width, height = image.size
+                if width < 300 or height < 300:
+                    new_size = (max(300, width * 2), max(300, height * 2))
+                    resized_image = image.resize(new_size, Image.Resampling.LANCZOS)
+                    text3 = pytesseract.image_to_string(resized_image, lang='eng+chi_sim')
+                    if text3.strip():
+                        text_results.append(("resized", text3.strip()))
+            except Exception:
+                pass
+            
+            # Select best result or combine them
+            if text_results:
+                # Log all attempts for debugging
+                logger.info("=" * 60)
+                logger.info("👁️ 【OCR处理详情】")
+                logger.info(f"   📊 尝试方法数: {len(text_results)}")
+                for method, text in text_results:
+                    logger.info(f"   📝 {method}: {repr(text[:50])}...")
+                
+                # Use the longest result as it's likely more complete
+                best_result = max(text_results, key=lambda x: len(x[1]))[1]
+                logger.info(f"   ✨ 最佳结果: {repr(best_result[:50])}...")
+                
+                # Apply math symbol corrections
+                corrected_text = self._correct_math_symbols(best_result)
+                logger.info(f"   🔧 修正后结果: {repr(corrected_text[:100])}")
+                logger.info("=" * 60)
+                
+                return corrected_text
+            else:
+                logger.warning("No text found in image with any OCR method")
                 return None
-            
-            return text_content
             
         except Exception as e:
             logger.error(f"Error processing image with OCR: {str(e)}")
             return None
+    
+    def _correct_math_symbols(self, text: str) -> str:
+        """Apply common math symbol corrections to OCR output."""
+        # Common OCR misrecognitions for math symbols
+        corrections = {
+            # Integral symbols
+            r'\[ve\s*\n?\s*x': '∫ x',  # Specific fix for the current issue
+            r'\[': '∫',  # Left bracket often misrecognized as integral
+            r'\\int': '∫',
+            r'J\s*x': '∫ x',
+            r'\]\s*x': '∫ x',
+            
+            # Common math symbols
+            r'＋': '+',
+            r'－': '-', 
+            r'×': '×',
+            r'÷': '÷',
+            r'＝': '=',
+            r'\bve\b': '',  # Remove common OCR noise
+            r'\s+': ' ',  # Normalize whitespace
+            
+            # Exponents
+            r'\^n': '^n',
+            r'\bn\b': 'n',
+            
+            # Differential
+            r'\bdx\b': 'dx',
+            r'\bdy\b': 'dy',
+            r'\bdt\b': 'dt',
+        }
+        
+        corrected = text
+        for pattern, replacement in corrections.items():
+            corrected = re.sub(pattern, replacement, corrected, flags=re.IGNORECASE)
+        
+        # Clean up extra whitespace
+        corrected = ' '.join(corrected.split())
+        
+        return corrected
     
     async def _extract_from_text(self, file_path: str) -> Optional[str]:
         """Extract text from plain text file."""

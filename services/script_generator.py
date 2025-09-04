@@ -347,6 +347,21 @@ async def generate_manim_script(
             formulas_str = ', '.join(local_analyzed_content.get('formulas', []))
             suggestions_str = ', '.join(local_analyzed_content.get('animation_suggestions', []))
             
+            # 详细日志输出 - 显示分析结果
+            logger.info("=" * 120)
+            logger.info("📋 【资料分析详细结果】")
+            logger.info(f"   ✨ 内容类型: {local_analyzed_content.get('content_type', 'Unknown')}")
+            logger.info(f"   🔑 关键概念: {concepts_str}")
+            logger.info(f"   🎯 教育重点: {local_analyzed_content.get('educational_focus', 'N/A')}")
+            logger.info(f"   📐 数学公式: {formulas_str}")
+            logger.info(f"   🎬 动画建议: {suggestions_str}")
+            logger.info("-" * 120)
+            logger.info("📄 【原始上传内容预览】")
+            logger.info(f"{file_context[:500]}...")
+            if len(file_context) > 500:
+                logger.info(f"... (共 {len(file_context)} 字符)")
+            logger.info("=" * 120)
+            
             user_message = f"""Create an educational animation based on the following uploaded material:
 
 User's Request: {prompt}
@@ -362,6 +377,13 @@ Full Uploaded Content:
 {file_context}
 
 CRITICAL: Base your animation on the KEY CONCEPTS and STRUCTURE from the uploaded material. The user's request indicates how to present this content. Focus on making the uploaded content visual and engaging."""
+            
+            # 显示最终prompt
+            logger.info("-" * 120)
+            logger.info("🚀 【发送给Claude的完整Prompt】")
+            logger.info("-" * 120)
+            logger.info(user_message)
+            logger.info("=" * 120)
         else:
             # 分析失败时的降级处理（保持原有逻辑）
             user_message = f"""Create an educational animation about: {prompt}
@@ -370,8 +392,31 @@ Uploaded Content Context:
 {file_context}
 
 IMPORTANT: Use the uploaded content as the primary source for your animation."""
+            
+            logger.info("=" * 120)
+            logger.info("⚠️ 【资料分析失败，使用降级处理】")
+            logger.info("-" * 120)
+            logger.info("📄 【原始上传内容】")
+            logger.info(f"{file_context[:500]}...")
+            if len(file_context) > 500:
+                logger.info(f"... (共 {len(file_context)} 字符)")
+            logger.info("-" * 120)
+            logger.info("🚀 【发送给Claude的完整Prompt】")
+            logger.info("-" * 120)
+            logger.info(user_message)
+            logger.info("=" * 120)
     else:
         user_message = f"Create an educational animation about: {prompt}"
+        logger.info("=" * 120)
+        logger.info("📝 【无上传资料，仅使用用户提示词】")
+        logger.info("-" * 120)
+        logger.info("👤 【用户输入】")
+        logger.info(f"{prompt}")
+        logger.info("-" * 120)
+        logger.info("🚀 【发送给Claude的完整Prompt】")
+        logger.info("-" * 120)
+        logger.info(user_message)
+        logger.info("=" * 120)
     
     messages: List[MessageParam] = [{"role": "user", "content": user_message}]
     
@@ -384,6 +429,20 @@ IMPORTANT: Use the uploaded content as the primary source for your animation."""
             raise Exception("No messages provided for script generation")
         
         logger.info(f"Generating script with {len(messages)} messages")
+        
+        # 打印完整的API调用参数
+        logger.info("🤖 【Claude API调用详情】")
+        logger.info("=" * 120)
+        logger.info("📋 【System Prompt】")
+        logger.info(system_prompt)
+        logger.info("=" * 120)
+        logger.info("💬 【Messages】")
+        for i, msg in enumerate(messages):
+            logger.info(f"Message {i+1} ({msg['role']}):")
+            logger.info(msg['content'])
+            if i < len(messages) - 1:
+                logger.info("-" * 60)
+        logger.info("=" * 120)
         
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -534,6 +593,20 @@ async def refine_manim_script(
         if not conversation_history:
             raise Exception("No valid messages found after validation")
         
+        # 打印refine阶段的完整API调用参数
+        logger.info("🔄 【Claude API调用详情 - REFINE阶段】")
+        logger.info("=" * 120)
+        logger.info("📋 【System Prompt】")
+        logger.info(system_prompt)
+        logger.info("=" * 120)
+        logger.info("💬 【Messages (Conversation History)】")
+        for i, msg in enumerate(conversation_history):
+            logger.info(f"Message {i+1} ({msg['role']}):")
+            logger.info(msg['content'])
+            if i < len(conversation_history) - 1:
+                logger.info("-" * 60)
+        logger.info("=" * 120)
+        
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4000,
@@ -649,6 +722,18 @@ async def fix_manim_script_from_error(
     Return ONLY the fixed Python code, no explanations."""
     
     try:
+        fix_message = f"Fix this Manim script:\n\n{script}\n\nError message:\n{error_message}"
+        
+        # 打印修复阶段的完整API调用参数
+        logger.info("🛠️ 【Claude API调用详情 - FIX阶段】")
+        logger.info("=" * 120)
+        logger.info("📋 【System Prompt】")
+        logger.info(system_prompt)
+        logger.info("=" * 120)
+        logger.info("💬 【Fix Message】")
+        logger.info(fix_message)
+        logger.info("=" * 120)
+        
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4000,
@@ -656,7 +741,7 @@ async def fix_manim_script_from_error(
             messages=[
                 {
                     "role": "user",
-                    "content": f"Fix this Manim script:\n\n{script}\n\nError message:\n{error_message}"
+                    "content": fix_message
                 }
             ]
         )
@@ -1055,6 +1140,56 @@ async def estimate_narration_duration(client: anthropic.Anthropic, prompt: str) 
         return min(45.0 + word_count * 2, 75.0)
 
 
+def detect_mathematical_content(text: str) -> Dict[str, Any]:
+    """
+    检测文本中的数学内容模式，即使OCR结果不完美
+    
+    Args:
+        text: OCR提取的文本
+        
+    Returns:
+        检测到的数学内容信息
+    """
+    math_patterns = {
+        'integral': [r'∫', r'\[.*?x', r'J.*?x', r'integral', r'积分'],
+        'derivative': [r'∂', r'derivative', r'导数', r'd/dx'],
+        'equation': [r'=', r'solve', r'解', r'方程'],
+        'function': [r'f\(', r'g\(', r'函数', r'function'],
+        'exponent': [r'\^', r'power', r'幂', r'指数'],
+        'polynomial': [r'x\^', r'polynomial', r'多项式']
+    }
+    
+    detected_types = []
+    confidence_score = 0
+    
+    for math_type, patterns in math_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                detected_types.append(math_type)
+                confidence_score += 1
+                break
+    
+    # 特殊处理积分符号的常见误识别
+    if any(pattern in text.lower() for pattern in ['[ve', '] x', 'j x', '∫']):
+        detected_types.append('integral')
+        confidence_score += 2
+    
+    # 检测变量模式 (x, y, z, n等)
+    if re.search(r'\b[xyznt]\b', text):
+        confidence_score += 1
+        
+    # 检测dx, dy等微分符号
+    if re.search(r'd[xyz]', text):
+        detected_types.append('differential')
+        confidence_score += 1
+    
+    return {
+        'detected_types': detected_types,
+        'confidence_score': confidence_score,
+        'is_mathematical': confidence_score > 0
+    }
+
+
 async def analyze_uploaded_content(
     client: anthropic.Anthropic,
     file_context: str,
@@ -1108,6 +1243,26 @@ Example:
     "animation_suggestions": ["show parabola transformation", "demonstrate factoring steps"]
 }}"""
     
+    # 首先进行数学内容检测
+    math_detection = detect_mathematical_content(file_context)
+    logger.info("=" * 80)
+    logger.info("🔍 【数学内容检测结果】")
+    logger.info(f"   📊 检测结果: {math_detection}")
+    logger.info(f"   🎯 是否为数学内容: {'是' if math_detection['is_mathematical'] else '否'}")
+    logger.info(f"   📋 检测到的类型: {', '.join(math_detection['detected_types'])}")
+    logger.info(f"   💯 置信度评分: {math_detection['confidence_score']}")
+    logger.info("=" * 80)
+    
+    # 如果检测到数学内容但OCR结果很短或不完整，增强提示
+    enhanced_context = file_context
+    if math_detection['is_mathematical'] and len(file_context.strip()) < 20:
+        if 'integral' in math_detection['detected_types']:
+            enhanced_context += "\n\n[AI检测到积分符号，可能是积分题目: ∫x^n dx]"
+            logger.info("🔧 【智能增强】添加积分题目上下文")
+        if 'exponent' in math_detection['detected_types']:
+            enhanced_context += "\n\n[AI检测到指数表达式]"
+            logger.info("🔧 【智能增强】添加指数表达式上下文")
+    
     try:
         message = client.messages.create(
             model="claude-3-5-sonnet-20241022",
@@ -1116,7 +1271,7 @@ Example:
             messages=[
                 {
                     "role": "user",
-                    "content": f"User request: {user_prompt}\n\nUploaded content to analyze:\n{file_context[:8000]}"  # Limit content length
+                    "content": f"User request: {user_prompt}\n\nUploaded content to analyze:\n{enhanced_context[:8000]}"  # Limit content length
                 }
             ]
         )
